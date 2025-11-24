@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Terminal, Loader2, Settings, Server, Cpu, Paperclip, X, FileCode, Copy, Check, Trash2 } from 'lucide-react';
+import { Send, Bot, User, Terminal, Loader2, Settings, Server, Cpu, Paperclip, X, FileCode, Copy, Check, Trash2, Eye, Code } from 'lucide-react';
 import { sendLocalChatRequest } from '../../services/geminiService';
 import { uploadFileToBackend, sendBackendChatRequest } from '../../services/apiService';
 import { ChatMessage, FileItem } from '../../types';
@@ -58,50 +58,153 @@ const CodeBlock: React.FC<{ language: string; value: string }> = ({ language, va
   );
 };
 
+const HtmlPreviewBlock: React.FC<{ value: string }> = ({ value }) => {
+  const [copied, setCopied] = useState(false);
+  const [showPreview, setShowPreview] = useState(true);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(value);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  // 确保 HTML 内容完整（如果没有 html/head/body 标签，自动包装）
+  const getFullHtml = (html: string): string => {
+    const trimmed = html.trim();
+    // 如果已经包含完整的 HTML 结构，直接返回
+    if (trimmed.toLowerCase().startsWith('<!doctype') || 
+        (trimmed.toLowerCase().includes('<html') && trimmed.toLowerCase().includes('</html>'))) {
+      return trimmed;
+    }
+    // 如果只有部分 HTML 标签，包装成完整文档
+    if (trimmed.toLowerCase().startsWith('<html') || 
+        trimmed.toLowerCase().startsWith('<head') || 
+        trimmed.toLowerCase().startsWith('<body')) {
+      return `<!DOCTYPE html>\n<html>\n<head><meta charset="UTF-8"></head>\n<body>\n${trimmed}\n</body>\n</html>`;
+    }
+    // 否则包装成完整的 HTML 文档
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HTML Preview</title>
+</head>
+<body>
+${trimmed}
+</body>
+</html>`;
+  };
+
+  return (
+    <div className="my-3 rounded-lg overflow-hidden border border-slate-700 bg-[#1e1e1e] shadow-lg">
+      <div className="flex justify-between items-center px-4 py-2 bg-[#2d2d2d] border-b border-slate-700">
+        <span className="text-xs font-mono text-slate-400 lowercase">html</span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowPreview(!showPreview)}
+            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition"
+            title={showPreview ? '查看源代码' : '预览 HTML'}
+          >
+            {showPreview ? <Code size={14} /> : <Eye size={14} />}
+            {showPreview ? '源代码' : '预览'}
+          </button>
+          <button 
+            onClick={handleCopy}
+            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition"
+          >
+            {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
+            {copied ? 'Copied!' : 'Copy'}
+          </button>
+        </div>
+      </div>
+      {showPreview ? (
+        <div className="w-full bg-white border-t border-slate-700" style={{ minHeight: '300px', maxHeight: '600px', overflow: 'auto' }}>
+          <iframe
+            srcDoc={getFullHtml(value)}
+            className="w-full border-0"
+            style={{ minHeight: '300px', height: '100%', width: '100%' }}
+            sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+            title="HTML Preview"
+          />
+        </div>
+      ) : (
+        <div className="p-4 overflow-x-auto">
+          <pre className="font-mono text-sm text-slate-300 leading-relaxed whitespace-pre">
+            <code>{value}</code>
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const MessageRenderer: React.FC<{ text: string }> = ({ text }) => {
-  // Regex to split by code blocks AND markdown images
-  // Matches ```code``` OR ![alt](url)
+  // 使用更简单的正则表达式分割文本
+  // 匹配代码块：```language\n...code...```
   const parts = text.split(/(```[\s\S]*?```|!\[.*?\]\(.*?\))/g);
 
   return (
     <div className="space-y-2">
       {parts.map((part, index) => {
+        // 检查是否为代码块
         if (part.startsWith('```')) {
-          const match = part.match(/```(\w*)?\n?([\s\S]*?)```/);
-          if (match) {
-            const language = match[1] || '';
-            const code = match[2] || '';
-            return <CodeBlock key={index} language={language} value={code.trim()} />;
-          }
-        } else if (part.startsWith('![') && part.includes('](')) {
-            // Render Image, fixing backend URL path if needed
-            // The backend returns /static/xxx.png. We assume backend is at localhost:8000 for now.
-            const match = part.match(/!\[(.*?)\]\((.*?)\)/);
-            if (match) {
-                let url = match[2];
-                if (url.startsWith('/static')) {
-                    url = `http://localhost:8000${url}`;
-                }
-                return (
-                    <div key={index} className="my-2 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 bg-white dark:bg-black">
-                        <img src={url} alt={match[1]} className="max-w-full h-auto" />
-                    </div>
-                );
+          // 提取语言和代码 - 使用更可靠的正则表达式
+          const codeBlockMatch = part.match(/```(\w+)?\s*\n([\s\S]*?)```/) || part.match(/```(\w+)?\s*([\s\S]*?)```/);
+          if (codeBlockMatch) {
+            const language = (codeBlockMatch[1] || '').trim().toLowerCase();
+            const code = (codeBlockMatch[2] || '').trim();
+            
+            // 检测是否为 HTML - 更严格的检测逻辑
+            const hasHtmlDoctype = /<!DOCTYPE\s+html\s*/i.test(code);
+            const hasHtmlTag = /<html[\s>]/i.test(code);
+            const hasHeadBody = /<head[\s>]/i.test(code) && /<body[\s>]/i.test(code);
+            const hasHtmlElements = /<(div|p|h1|h2|h3|span|a|button|header|nav|footer|section|article|style)[\s>]/i.test(code);
+            
+            const isHtml = language === 'html' || 
+                          hasHtmlDoctype ||
+                          (hasHtmlTag && (hasHeadBody || hasHtmlElements)) ||
+                          (language === '' && (hasHeadBody || (hasHtmlElements && code.includes('</'))));
+            
+            // 添加调试日志
+            if (isHtml) {
+              console.log('Detected HTML code block:', { language, hasHtmlDoctype, hasHtmlTag, hasHeadBody, hasHtmlElements, codeLength: code.length });
             }
+            
+            if (isHtml) {
+              return <HtmlPreviewBlock key={index} value={code} />;
+            }
+            return <CodeBlock key={index} language={language} value={code} />;
+          }
+        } 
+        // 检查是否为图片
+        else if (part.startsWith('![') && part.includes('](')) {
+          const imageMatch = part.match(/!\[(.*?)\]\((.*?)\)/);
+          if (imageMatch) {
+            let url = imageMatch[2];
+            if (url.startsWith('/static')) {
+              url = `http://localhost:8000${url}`;
+            }
+            return (
+              <div key={index} className="my-2 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 bg-white dark:bg-black">
+                <img src={url} alt={imageMatch[1]} className="max-w-full h-auto" />
+              </div>
+            );
+          }
         }
         
+        // 渲染普通文本
         if (!part.trim()) return null;
-
-        // Render regular text with formatting
+        
         return (
-            <div key={index} className="whitespace-pre-wrap">
-                {part.split(/(\*\*.*?\*\*)/g).map((subPart, i) => {
-                    if (subPart.startsWith('**') && subPart.endsWith('**')) {
-                        return <strong key={i}>{subPart.slice(2, -2)}</strong>;
-                    }
-                    return subPart;
-                })}
-            </div>
+          <div key={index} className="whitespace-pre-wrap">
+            {part.split(/(\*\*.*?\*\*)/g).map((subPart, i) => {
+              if (subPart.startsWith('**') && subPart.endsWith('**')) {
+                return <strong key={i}>{subPart.slice(2, -2)}</strong>;
+              }
+              return subPart;
+            })}
+          </div>
         );
       })}
     </div>

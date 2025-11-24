@@ -26,9 +26,9 @@ services:
       #- OLLAMA_HOST=http://host.docker.internal:11434
       #- LLM_MODEL=gemini-pro
       # Option 2: 使用自定义 LLM API (取消注释并配置)
-       - LLM_API_BASE=https://api.deepseek.com/v1
-       - LLM_API_KEY=sk-df683452ea694d2b95945c82cd005a4b
-       - LLM_MODEL=deepseek-chat
+       - LLM_API_BASE=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+       - LLM_API_KEY=sk-3d97b2e5f50e4c0d865a9105e3894ac3
+       - LLM_MODEL=qwen3-coder-plus
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
