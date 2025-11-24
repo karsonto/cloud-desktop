@@ -1,7 +1,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Terminal, Loader2, Settings, Server, Cloud, Cpu, Paperclip, X, FileCode, Copy, Check, Trash2 } from 'lucide-react';
-import { getGeminiClient, executeTool, SYSTEM_INSTRUCTION, tools, sendLocalChatRequest } from '../../services/geminiService';
+import { Send, Bot, User, Terminal, Loader2, Settings, Server, Cpu, Paperclip, X, FileCode, Copy, Check, Trash2 } from 'lucide-react';
+import { sendLocalChatRequest } from '../../services/geminiService';
 import { uploadFileToBackend, sendBackendChatRequest } from '../../services/apiService';
 import { ChatMessage, FileItem } from '../../types';
 
@@ -9,15 +9,14 @@ interface GeminiChatProps {
   fileSystem: FileItem[];
 }
 
-type Provider = 'cloud' | 'local';
 type LocalMode = 'direct' | 'interpreter';
 
 interface AgentConfig {
-  provider: Provider;
   localMode: LocalMode;
-  localModel: string;
-  apiBaseUrl: string; // e.g. http://localhost:8000/v1
-  apiKey: string;
+  backendUrl: string; // Backend server URL for interpreter mode (e.g. http://localhost:8000)
+  localModel: string; // Only for direct mode
+  apiBaseUrl: string; // Only for direct mode (e.g. http://localhost:8000/v1)
+  apiKey: string; // Only for direct mode
 }
 
 interface Attachment {
@@ -114,7 +113,7 @@ const MessageRenderer: React.FC<{ text: string }> = ({ text }) => {
 const GeminiChat: React.FC<GeminiChatProps> = ({ fileSystem }) => {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([
-    { role: 'model', text: 'Hello! I am Athlon Agent. Connect me to vLLM, Ollama or cloud models.' }
+    { role: 'model', text: 'Hello! I am Athlon Agent. Connect me to vLLM or Ollama.' }
   ]);
   const [isLoading, setIsLoading] = useState(false);
   const [attachment, setAttachment] = useState<Attachment | null>(null);
@@ -123,15 +122,14 @@ const GeminiChat: React.FC<GeminiChatProps> = ({ fileSystem }) => {
   
   const [showSettings, setShowSettings] = useState(false);
   const [config, setConfig] = useState<AgentConfig>({
-    provider: 'local',
     localMode: 'interpreter', 
+    backendUrl: 'http://localhost:8000', // Default backend server
     localModel: 'athlon-coder',
     apiBaseUrl: 'http://localhost:8000/v1', // Default Ollama/vLLM local address
     apiKey: ''
   });
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const chatSessionRef = useRef<any>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -141,27 +139,12 @@ const GeminiChat: React.FC<GeminiChatProps> = ({ fileSystem }) => {
     scrollToBottom();
   }, [messages, isLoading, attachment]);
 
-  // Init Cloud Session (Legacy/Optional)
-  const initCloudSession = () => {
-      const client = getGeminiClient();
-      chatSessionRef.current = client.chats.create({
-          model: 'gemini-2.5-flash',
-          config: {
-              systemInstruction: SYSTEM_INSTRUCTION,
-              tools: tools,
-          }
-      });
-  };
-
   const handleClearChat = () => {
       setMessages([
         { role: 'model', text: 'Hello! I am Athlon Agent. Ready to assist.' }
       ]);
       setAttachment(null);
       setUploadedBackendFilename(undefined);
-      if (config.provider === 'cloud') {
-          initCloudSession();
-      }
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -196,49 +179,38 @@ const GeminiChat: React.FC<GeminiChatProps> = ({ fileSystem }) => {
       setAttachment(null);
 
       try {
-          if (config.provider === 'cloud') {
-              // Cloud logic
-              let textToSend = input;
-               if (currentAttachment && currentAttachment.fileObject) {
-                  textToSend += `\n[User attached file: ${currentAttachment.name}]`;
-               }
-               await processCloudMessage(textToSend);
-          } else {
-              // LOCAL LOGIC
-              let responseText = "";
+          let responseText = "";
 
-              // Decide: Direct connection OR Backend Interpreter?
-              if (config.localMode === 'interpreter') {
-                  // INTERPRETER MODE (Uses Python Backend to execute code)
-                  let filenameForRequest = uploadedBackendFilename;
+          // Decide: Direct connection OR Backend Interpreter?
+          if (config.localMode === 'interpreter') {
+              // INTERPRETER MODE (Uses Python Backend to execute code)
+              // Backend handles all LLM configuration
+              let filenameForRequest = uploadedBackendFilename;
 
-                  // Upload file if new attachment
-                  if (currentAttachment && currentAttachment.fileObject) {
-                      setMessages(prev => [...prev, { role: 'model', text: `Uploading ${currentAttachment.name} to analysis backend...` }]);
-                      const uploadResult = await uploadFileToBackend(currentAttachment.fileObject);
-                      filenameForRequest = uploadResult.filename;
-                      setUploadedBackendFilename(filenameForRequest);
-                  }
-
-                  responseText = await sendBackendChatRequest(
-                      newMessages, 
-                      config.localModel,
-                      filenameForRequest,
-                      config.apiBaseUrl,
-                      config.apiKey
-                  );
-              } else {
-                  // DIRECT MODE (Frontend -> vLLM directly, no code execution)
-                  responseText = await sendLocalChatRequest(
-                      config.apiBaseUrl,
-                      config.localModel,
-                      newMessages,
-                      config.apiKey
-                  );
+              // Upload file if new attachment
+              if (currentAttachment && currentAttachment.fileObject) {
+                  setMessages(prev => [...prev, { role: 'model', text: `Uploading ${currentAttachment.name} to analysis backend...` }]);
+                  const uploadResult = await uploadFileToBackend(currentAttachment.fileObject, config.backendUrl);
+                  filenameForRequest = uploadResult.filename;
+                  setUploadedBackendFilename(filenameForRequest);
               }
-              
-              setMessages(prev => [...prev, { role: 'model', text: responseText }]);
+
+              responseText = await sendBackendChatRequest(
+                  newMessages, 
+                  config.backendUrl,
+                  filenameForRequest
+              );
+          } else {
+              // DIRECT MODE (Frontend -> vLLM directly, no code execution)
+              responseText = await sendLocalChatRequest(
+                  config.apiBaseUrl,
+                  config.localModel,
+                  newMessages,
+                  config.apiKey
+              );
           }
+          
+          setMessages(prev => [...prev, { role: 'model', text: responseText }]);
       } catch (err: any) {
           console.error(err);
           setMessages(prev => [...prev, { role: 'model', text: `Error: ${err.message}`, isError: true }]);
@@ -247,21 +219,13 @@ const GeminiChat: React.FC<GeminiChatProps> = ({ fileSystem }) => {
       }
   };
 
-  const processCloudMessage = async (text: string) => {
-      if (!chatSessionRef.current) initCloudSession();
-      const response = await chatSessionRef.current.sendMessage({ message: text });
-      if (response.text) {
-         setMessages(prev => [...prev, { role: 'model', text: response.text }]);
-      }
-  };
-
   return (
     <div className="flex flex-col h-full bg-slate-50 dark:bg-slate-900/50 relative">
       {/* Header */}
       <div className="absolute top-0 left-0 w-full h-10 flex justify-between items-center px-4 bg-white/50 dark:bg-slate-800/50 backdrop-blur z-10 border-b border-gray-200 dark:border-gray-700">
          <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
-             {config.provider === 'cloud' ? <Cloud size={12} /> : <Server size={12} />}
-             <span>{config.provider === 'cloud' ? 'Gemini Cloud' : `Local (${config.localMode})`}</span>
+             <Server size={12} />
+             <span>Local ({config.localMode})</span>
          </div>
          <div className="flex items-center gap-1">
              <button onClick={handleClearChat} className="p-1 hover:bg-red-100 text-slate-500 transition rounded"><Trash2 size={14} /></button>
@@ -274,64 +238,73 @@ const GeminiChat: React.FC<GeminiChatProps> = ({ fileSystem }) => {
         <div className="absolute top-10 right-0 w-72 bg-white dark:bg-slate-800 shadow-xl border-l border-b border-gray-200 dark:border-gray-700 p-4 z-20 max-h-[500px] overflow-y-auto">
             <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200 mb-3">Settings</h3>
             <div className="space-y-4">
-                <div className="flex bg-slate-100 dark:bg-slate-900 rounded p-1">
-                    <button onClick={() => setConfig({...config, provider: 'cloud'})} className={`flex-1 text-xs py-1 rounded ${config.provider === 'cloud' ? 'bg-white shadow text-blue-600' : 'text-slate-500'}`}>Cloud</button>
-                    <button onClick={() => setConfig({...config, provider: 'local'})} className={`flex-1 text-xs py-1 rounded ${config.provider === 'local' ? 'bg-white shadow text-green-600' : 'text-slate-500'}`}>Local</button>
+                <div className="bg-slate-50 dark:bg-slate-900/50 p-2 rounded border border-slate-100 dark:border-slate-700">
+                    <label className="text-xs font-semibold text-slate-500 dark:text-slate-400 block mb-2">Mode</label>
+                    <div className="flex gap-2">
+                        <label className="flex items-center gap-1 text-xs cursor-pointer text-slate-700 dark:text-slate-300">
+                            <input type="radio" name="mode" checked={config.localMode === 'interpreter'} onChange={() => setConfig({...config, localMode: 'interpreter'})} />
+                            Interpreter (Python)
+                        </label>
+                        <label className="flex items-center gap-1 text-xs cursor-pointer text-slate-700 dark:text-slate-300">
+                            <input type="radio" name="mode" checked={config.localMode === 'direct'} onChange={() => setConfig({...config, localMode: 'direct'})} />
+                            Direct Chat
+                        </label>
+                    </div>
+                    <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 leading-tight">
+                        {config.localMode === 'interpreter' 
+                         ? 'Runs code on backend. Backend handles LLM configuration in Docker.'
+                         : 'Connects directly to LLM API from browser.'}
+                    </p>
                 </div>
-                
-                {config.provider === 'local' && (
-                    <>
-                        <div className="bg-slate-50 dark:bg-slate-900/50 p-2 rounded border border-slate-100 dark:border-slate-700">
-                            <label className="text-xs font-semibold text-slate-500 block mb-2">Mode</label>
-                            <div className="flex gap-2">
-                                <label className="flex items-center gap-1 text-xs cursor-pointer">
-                                    <input type="radio" name="mode" checked={config.localMode === 'interpreter'} onChange={() => setConfig({...config, localMode: 'interpreter'})} />
-                                    Interpreter (Python)
-                                </label>
-                                <label className="flex items-center gap-1 text-xs cursor-pointer">
-                                    <input type="radio" name="mode" checked={config.localMode === 'direct'} onChange={() => setConfig({...config, localMode: 'direct'})} />
-                                    Direct Chat
-                                </label>
-                            </div>
-                            <p className="text-[10px] text-slate-400 mt-1 leading-tight">
-                                {config.localMode === 'interpreter' 
-                                 ? 'Runs code on backend (port 8000). Backend connects to LLM.'
-                                 : 'Connects directly to LLM API from browser.'}
-                            </p>
-                        </div>
 
+                {config.localMode === 'interpreter' ? (
+                    <div>
+                        <label className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Backend Server URL</label>
+                        <input 
+                            type="text" 
+                            value={config.backendUrl} 
+                            onChange={(e) => setConfig({...config, backendUrl: e.target.value})} 
+                            className="w-full text-xs px-2 py-1 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded text-slate-800 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-500" 
+                            placeholder="e.g. http://localhost:8000"
+                        />
+                        <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">
+                            Backend server address. LLM configuration is handled in Docker.
+                        </p>
+                    </div>
+                ) : (
+                    <>
                         <div>
-                            <label className="text-xs text-slate-500 block mb-1">Model Name</label>
+                            <label className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Model Name</label>
                             <input 
                                 type="text" 
                                 value={config.localModel} 
                                 onChange={(e) => setConfig({...config, localModel: e.target.value})} 
-                                className="w-full text-xs px-2 py-1 bg-slate-50 border rounded" 
+                                className="w-full text-xs px-2 py-1 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded text-slate-800 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-500" 
                                 placeholder="e.g. llama3, qwen2.5"
                             />
                         </div>
 
                         <div>
-                            <label className="text-xs text-slate-500 block mb-1">API Base URL</label>
+                            <label className="text-xs text-slate-500 dark:text-slate-400 block mb-1">API Base URL</label>
                             <input 
                                 type="text" 
                                 value={config.apiBaseUrl} 
                                 onChange={(e) => setConfig({...config, apiBaseUrl: e.target.value})} 
-                                className="w-full text-xs px-2 py-1 bg-slate-50 border rounded" 
+                                className="w-full text-xs px-2 py-1 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded text-slate-800 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-500" 
                                 placeholder="e.g. http://localhost:11434/v1"
                             />
-                            <p className="text-[10px] text-slate-400 mt-1">
+                            <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">
                                 For vLLM/OpenAI compatible servers. Ensure it ends with /v1 if needed.
                             </p>
                         </div>
 
                         <div>
-                            <label className="text-xs text-slate-500 block mb-1">API Key (Optional)</label>
+                            <label className="text-xs text-slate-500 dark:text-slate-400 block mb-1">API Key (Optional)</label>
                             <input 
                                 type="password" 
                                 value={config.apiKey} 
                                 onChange={(e) => setConfig({...config, apiKey: e.target.value})} 
-                                className="w-full text-xs px-2 py-1 bg-slate-50 border rounded" 
+                                className="w-full text-xs px-2 py-1 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded text-slate-800 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-500" 
                             />
                         </div>
                     </>
@@ -345,8 +318,8 @@ const GeminiChat: React.FC<GeminiChatProps> = ({ fileSystem }) => {
         {messages.map((msg, idx) => (
           <div key={idx} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
              {msg.role === 'model' && (
-                 <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 shadow-lg ${config.provider === 'local' ? 'bg-green-600' : 'bg-indigo-600'}`}>
-                     {config.provider === 'local' ? <Cpu size={16} className="text-white" /> : <Bot size={16} className="text-white" />}
+                 <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 shadow-lg bg-green-600">
+                     <Cpu size={16} className="text-white" />
                  </div>
              )}
              <div className={`max-w-[90%] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm ${

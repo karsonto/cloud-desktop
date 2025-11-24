@@ -8,12 +8,13 @@ export interface BackendResponse {
   content: string;
 }
 
-export const uploadFileToBackend = async (file: File): Promise<{ filename: string, path: string }> => {
+export const uploadFileToBackend = async (file: File, backendUrl?: string): Promise<{ filename: string, path: string }> => {
   const formData = new FormData();
   formData.append('file', file);
+  const baseUrl = backendUrl || API_BASE_URL;
 
   try {
-    const response = await fetch(`${API_BASE_URL}/upload`, {
+    const response = await fetch(`${baseUrl}/upload`, {
       method: 'POST',
       body: formData,
     });
@@ -31,23 +32,18 @@ export const uploadFileToBackend = async (file: File): Promise<{ filename: strin
 
 export const sendBackendChatRequest = async (
   messages: ChatMessage[],
-  model: string,
-  uploadedFilename?: string,
-  apiBase?: string,
-  apiKey?: string
+  backendUrl: string,
+  uploadedFilename?: string
 ): Promise<string> => {
   try {
-    const response = await fetch(`${API_BASE_URL}/chat`, {
+    const response = await fetch(`${backendUrl}/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         messages: messages.map(m => ({ role: m.role === 'model' ? 'assistant' : m.role, content: m.text })),
-        model: model,
-        filename: uploadedFilename,
-        llm_api_base: apiBase,
-        llm_api_key: apiKey
+        filename: uploadedFilename
       }),
     });
 

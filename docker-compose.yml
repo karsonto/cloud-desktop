@@ -21,7 +21,14 @@ services:
       - ./backend/uploads:/app/uploads
       - ./backend/static:/app/static
     environment:
-      - OLLAMA_HOST=http://host.docker.internal:11434 
+      # LLM Configuration - 在 Docker 中配置 LLM 相关设置
+      # Option 1: 使用 Ollama (默认)
+      #- OLLAMA_HOST=http://host.docker.internal:11434
+      #- LLM_MODEL=gemini-pro
+      # Option 2: 使用自定义 LLM API (取消注释并配置)
+       - LLM_API_BASE=https://api.deepseek.com/v1
+       - LLM_API_KEY=sk-df683452ea694d2b95945c82cd005a4b
+       - LLM_MODEL=deepseek-chat
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
