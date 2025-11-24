@@ -1,0 +1,5 @@
+{
+  "name": "CloudOS - AI Desktop Agent",
+  "description": "A web-based desktop environment featuring a Windows-like interface, integrated Gemini AI agent for file management, and a mock file system.",
+  "requestFramePermissions": []
+}

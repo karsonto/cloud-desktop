@@ -1,0 +1,43 @@
+services:
+  # 1. Frontend (React/Vite)
+  frontend:
+    build:
+      context: .
+      args:
+        - API_KEY=${API_KEY:-}
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # 2. Backend (Python/FastAPI)
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/uploads:/app/uploads
+      - ./backend/static:/app/static
+    environment:
+      - OLLAMA_HOST=http://host.docker.internal:11434 
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    # Note: Accessing host Ollama from container requires specific networking or 'host.docker.internal'
+
+  # Optional: If you want to run Ollama inside docker instead of on host
+  # ollama:
+  #   image: ollama/ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+
+# volumes:
+#   ollama_data:
