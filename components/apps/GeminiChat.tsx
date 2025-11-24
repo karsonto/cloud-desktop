@@ -139,7 +139,7 @@ ${trimmed}
   );
 };
 
-const MessageRenderer: React.FC<{ text: string }> = ({ text }) => {
+const MessageRenderer: React.FC<{ text: string; backendUrl?: string }> = ({ text, backendUrl = 'http://localhost:8000' }) => {
   // 使用更简单的正则表达式分割文本
   // 匹配代码块：```language\n...code...```
   const parts = text.split(/(```[\s\S]*?```|!\[.*?\]\(.*?\))/g);
@@ -183,7 +183,7 @@ const MessageRenderer: React.FC<{ text: string }> = ({ text }) => {
           if (imageMatch) {
             let url = imageMatch[2];
             if (url.startsWith('/static')) {
-              url = `http://localhost:8000${url}`;
+              url = `${backendUrl}${url}`;
             }
             return (
               <div key={index} className="my-2 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 bg-white dark:bg-black">
@@ -430,7 +430,7 @@ const GeminiChat: React.FC<GeminiChatProps> = ({ fileSystem }) => {
                  ? 'bg-blue-600 text-white rounded-br-none' 
                  : 'bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 rounded-bl-none border border-slate-100 dark:border-slate-700'
              }`}>
-                {msg.isError ? <span className="text-red-500">{msg.text}</span> : <MessageRenderer text={msg.text} />}
+                {msg.isError ? <span className="text-red-500">{msg.text}</span> : <MessageRenderer text={msg.text} backendUrl={config.backendUrl} />}
              </div>
           </div>
         ))}

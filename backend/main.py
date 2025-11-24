@@ -1,6 +1,7 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import os
@@ -10,6 +11,9 @@ import io
 import sys
 import traceback
 import re
+import glob
+import uuid
+from datetime import datetime
 import pandas as pd
 import pdfplumber
 import numpy as np
@@ -35,34 +39,47 @@ STATIC_DIR = "/app/static"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(STATIC_DIR, exist_ok=True)
 
+# 添加静态文件服务
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
 # 系统提示词 - 告诉大模型可以使用代码执行功能
-SYSTEM_INSTRUCTION = """You are Athlon Agent, an AI assistant with code execution capabilities.
+SYSTEM_INSTRUCTION = """You are Athlon Agent, an AI assistant with code execution capabilities - similar to OpenAI Code Interpreter.
 
 IMPORTANT CAPABILITIES:
 1. **Code Execution**: You can write and execute Python code to analyze files and data.
 2. **File Access**: When a user uploads a file, you will be informed of the file path. You can write code to read and analyze it.
 3. **Data Analysis**: You can use pandas, matplotlib, numpy, seaborn and other libraries to analyze Excel, CSV, PDF files.
+4. **Automatic Image Display**: When you create plots or charts using matplotlib/seaborn:
+   - Simply call `plt.show()` - images will be automatically saved and displayed
+   - Or use `plt.savefig('filename.png')` - images will be automatically shown to the user
+   - All generated images appear automatically in the response
+   - No need to manually save or reference images - the system handles it automatically
+5. **HTML Reports**: When users request HTML reports or HTML pages:
+   - **DO NOT** use Python to generate HTML (e.g., do NOT write Python code that creates HTML strings)
+   - **Directly output HTML code** wrapped in ```html ... ``` blocks
+   - The system has HTML preview functionality - users can see the rendered HTML directly
+   - Example: If asked to create a report, provide the HTML directly like ```html <html>...</html> ```
 
 AVAILABLE LIBRARIES:
-- The following libraries are pre-loaded and available: pandas (pd), numpy (np), matplotlib.pyplot (plt), seaborn (sns), json, pdfplumber
-- You can also use import statements to import these libraries: pandas, numpy, matplotlib, matplotlib.pyplot, seaborn, json, io, pdfplumber, openpyxl, datetime, math, etc.
-- Dangerous modules (os, sys, subprocess) are not allowed
+- The following libraries are pre-loaded: pandas (pd), numpy (np), matplotlib.pyplot (plt), seaborn (sns), json, pdfplumber
+- You can also import: datetime, math, statistics, etc.
+- Dangerous modules (os, sys, subprocess) are restricted
 
 CODE EXECUTION FORMAT:
-- When you need to execute code, provide ONE complete Python code block wrapped in ```python ... ```
-- Put ALL your code in a SINGLE code block - do not split code into multiple blocks
-- The entire code block will be executed as one unit
-- You can use import statements for allowed libraries
-- Results will be returned to you for further analysis
+- Provide ONE complete Python code block wrapped in ```python ... ```
+- Put ALL your code in a SINGLE code block
+- Results and images will be automatically returned
+- For HTML reports: Output HTML directly, NOT Python code that generates HTML
 
 FILE PATHS:
-- Uploaded files are stored in: /app/uploads/
-- You will receive the full file path when a file is uploaded
+- Uploaded files: /app/uploads/
+- Generated images: automatically saved and displayed
 
 RESPONSE FORMAT:
 - Always use Markdown formatting
-- Provide ONE complete code block with all necessary imports and code
-- Provide clear explanations of your analysis before or after the code block"""
+- Provide ONE complete code block with all necessary imports
+- Charts and plots appear automatically - just use plt.show() or plt.savefig()
+- For HTML reports: Output HTML directly in ```html ... ``` blocks, do NOT use Python to generate HTML"""
 
 
 class ChatMessage(BaseModel):
@@ -171,6 +188,66 @@ def execute_python_code(code: str, file_path: Optional[str] = None, safe_globals
                 "traceback": None
             }
     
+    # 记录执行前的图片文件列表（用于检测新生成的图片）
+    existing_images = set()
+    if os.path.exists(STATIC_DIR):
+        existing_images = set(glob.glob(os.path.join(STATIC_DIR, "*.png")) + 
+                             glob.glob(os.path.join(STATIC_DIR, "*.jpg")) +
+                             glob.glob(os.path.join(STATIC_DIR, "*.jpeg")) +
+                             glob.glob(os.path.join(STATIC_DIR, "*.svg")))
+    
+    # 创建 matplotlib 包装器，自动保存图片
+    class MatplotlibWrapper:
+        def __init__(self, original_plt, static_dir):
+            self.original_plt = original_plt
+            self.static_dir = static_dir
+            self._saved_images = []
+            
+        def __getattr__(self, name):
+            # 代理所有其他属性和方法到原始 plt
+            return getattr(self.original_plt, name)
+        
+        def show(self, *args, **kwargs):
+            """拦截 plt.show()，自动保存图片"""
+            # 检查是否有打开的图形
+            if len(self.original_plt.get_fignums()) > 0:
+                # 生成唯一文件名
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                unique_id = str(uuid.uuid4())[:8]
+                filename = f"plot_{timestamp}_{unique_id}.png"
+                filepath = os.path.join(self.static_dir, filename)
+                
+                # 保存图片
+                self.original_plt.savefig(filepath, dpi=100, bbox_inches='tight')
+                self._saved_images.append(filepath)
+                self.original_plt.close('all')  # 关闭所有图形
+                
+        def savefig(self, filename=None, *args, **kwargs):
+            """拦截 plt.savefig()，确保保存到 static 目录"""
+            if filename is None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                unique_id = str(uuid.uuid4())[:8]
+                filename = f"plot_{timestamp}_{unique_id}.png"
+            
+            # 如果不是绝对路径，保存到 static 目录
+            if not os.path.isabs(filename):
+                filename = os.path.join(self.static_dir, filename)
+            
+            # 确保目录存在
+            os.makedirs(os.path.dirname(filename), exist_ok=True)
+            
+            # 调用原始的 savefig
+            self.original_plt.savefig(filename, *args, **kwargs)
+            if filename not in self._saved_images:
+                self._saved_images.append(filename)
+            
+            # 如果指定了 close，关闭图形
+            if kwargs.get('close', False):
+                self.original_plt.close()
+    
+    # 包装 plt 对象
+    wrapped_plt = MatplotlibWrapper(plt, STATIC_DIR)
+    
     # 创建或使用传入的执行环境（支持代码块之间共享变量）
     if safe_globals is None:
         safe_globals = {
@@ -205,18 +282,20 @@ def execute_python_code(code: str, file_path: Optional[str] = None, safe_globals
             'io': io,
             'np': np,
             'numpy': np,
-            'plt': plt,
+            'plt': wrapped_plt,  # 使用包装后的 plt
             'matplotlib': matplotlib,
             'sns': sns,
             'seaborn': sns,
-            'display': print,  # Jupyter 的 display() 函数，用 print 替代
+            'display': lambda x: print(str(x)),  # 简单的 display 函数
         }
         
         # 如果提供了文件路径，添加到环境
         if file_path:
             safe_globals['file_path'] = file_path
     else:
-        # 使用传入的环境，但确保必要的库可用
+        # 使用传入的环境，但替换 plt 为包装版本
+        safe_globals['plt'] = wrapped_plt
+        # 确保必要的库可用
         if 'pd' not in safe_globals:
             safe_globals['pd'] = pd
             safe_globals['pandas'] = pd
@@ -229,14 +308,13 @@ def execute_python_code(code: str, file_path: Optional[str] = None, safe_globals
         if 'np' not in safe_globals:
             safe_globals['np'] = np
             safe_globals['numpy'] = np
-        if 'plt' not in safe_globals:
-            safe_globals['plt'] = plt
+        if 'matplotlib' not in safe_globals:
             safe_globals['matplotlib'] = matplotlib
         if 'sns' not in safe_globals:
             safe_globals['sns'] = sns
             safe_globals['seaborn'] = sns
         if 'display' not in safe_globals:
-            safe_globals['display'] = print  # Jupyter 的 display() 函数，用 print 替代
+            safe_globals['display'] = lambda x: print(str(x))
         if file_path and 'file_path' not in safe_globals:
             safe_globals['file_path'] = file_path
     
@@ -252,6 +330,41 @@ def execute_python_code(code: str, file_path: Optional[str] = None, safe_globals
     try:
         exec(code, safe_globals, safe_locals)
         output = captured_output.getvalue()
+        
+        # 检测新生成的图片文件
+        new_images = []
+        if os.path.exists(STATIC_DIR):
+            current_images = set(glob.glob(os.path.join(STATIC_DIR, "*.png")) + 
+                                glob.glob(os.path.join(STATIC_DIR, "*.jpg")) +
+                                glob.glob(os.path.join(STATIC_DIR, "*.jpeg")) +
+                                glob.glob(os.path.join(STATIC_DIR, "*.svg")))
+            
+            new_images = list(current_images - existing_images)
+            
+            # 添加包装器保存的图片（可能不在 glob 中）
+            for img_path in wrapped_plt._saved_images:
+                if os.path.exists(img_path) and img_path not in new_images:
+                    new_images.append(img_path)
+            
+            # 按修改时间排序，最新的在前
+            new_images.sort(key=lambda x: os.path.getmtime(x) if os.path.exists(x) else 0, reverse=True)
+        
+        # 如果代码执行后还有打开的图形（可能调用了 plt.show() 但没有保存），自动保存
+        if len(plt.get_fignums()) > 0:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            unique_id = str(uuid.uuid4())[:8]
+            auto_filename = os.path.join(STATIC_DIR, f"plot_{timestamp}_{unique_id}.png")
+            plt.savefig(auto_filename, dpi=100, bbox_inches='tight')
+            plt.close('all')
+            if auto_filename not in new_images:
+                new_images.append(auto_filename)
+        
+        # 将图片路径转换为 URL
+        image_urls = []
+        for img_path in new_images:
+            if os.path.exists(img_path):
+                filename = os.path.basename(img_path)
+                image_urls.append(f"/static/{filename}")
         
         # 获取最后一个表达式的结果（如果有）
         result = None
@@ -279,9 +392,12 @@ def execute_python_code(code: str, file_path: Optional[str] = None, safe_globals
         return {
             "success": True,
             "output": output,
-            "result": str(result) if result is not None else None
+            "result": str(result) if result is not None else None,
+            "images": image_urls  # 返回图片 URL 列表
         }
     except Exception as e:
+        # 确保关闭所有打开的图形
+        plt.close('all')
         error_trace = traceback.format_exc()
         return {
             "success": False,
@@ -290,6 +406,8 @@ def execute_python_code(code: str, file_path: Optional[str] = None, safe_globals
         }
     finally:
         sys.stdout = old_stdout
+        # 最后确保所有图形都关闭
+        plt.close('all')
 
 
 def extract_code_blocks(text: str) -> List[str]:
@@ -333,6 +451,10 @@ async def process_llm_response_with_code_execution(
                         if result.get("result"):
                             results_text += f"\n结果: {result['result']}"
                         results_text += f"\n```\n"
+                        # 添加图片
+                        if result.get("images"):
+                            for img_url in result["images"]:
+                                results_text += f"\n![生成的图表]({img_url})\n"
                 current_content += results_text
             return current_content
         
@@ -369,6 +491,11 @@ async def process_llm_response_with_code_execution(
             if result.get("result"):
                 results_text += f"\n结果: {result['result']}"
             results_text += f"\n```\n"
+            
+            # 自动添加生成的图片（类似 Code Interpreter）
+            if result.get("images"):
+                for img_url in result["images"]:
+                    results_text += f"\n![生成的图表]({img_url})\n"
             
             current_content += results_text
             return current_content
